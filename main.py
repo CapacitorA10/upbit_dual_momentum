@@ -89,36 +89,43 @@ class UpbitMomentumStrategy:
     def get_top20_market_cap(self):
         """
         시가총액 상위 20개 코인 조회 (제외 코인 제외)
+        업비트 API를 통해 시가총액 정보를 직접 조회
         """
         try:
-            tickers = pyupbit.get_tickers(fiat="KRW")
+            url = "https://api.upbit.com/v1/market/all"
+            headers = {"accept": "application/json"}
+            response = requests.get(url, headers=headers)
+            markets = response.json()
+
             market_caps = []
+            for market in markets:
+                if market['market'].startswith('KRW-'):
+                    try:
+                        symbol = market['market'].split('-')[1]
+                        if symbol not in self.exclude_coins:
+                            # 마켓 코드로 시세 조회
+                            url = f"https://api.upbit.com/v1/ticker?markets={market['market']}"
+                            ticker_response = requests.get(url, headers=headers)
+                            ticker_data = ticker_response.json()
 
-            for ticker in tickers:
-                try:
-                    symbol = ticker.split('-')[1]
-                    if symbol not in self.exclude_coins:
-                        # 현재가 조회
-                        price = pyupbit.get_current_price(ticker)
-                        if price is None:
-                            continue
+                            if ticker_data and len(ticker_data) > 0:
+                                market_cap = ticker_data[0].get('market_cap', 0)  # 시가총액
+                                trade_price = ticker_data[0].get('trade_price', 0)  # 현재가
+                                acc_trade_price_24h = ticker_data[0].get('acc_trade_price_24h', 0)  # 24시간 거래대금
 
-                        # OHLCV 데이터 조회
-                        ohlcv = pyupbit.get_ohlcv(ticker, count=1)
-                        if ohlcv is None or ohlcv.empty:
-                            continue
+                                if market_cap > 0:
+                                    market_caps.append((
+                                        market['market'],
+                                        market_cap,
+                                        trade_price,
+                                        acc_trade_price_24h
+                                    ))
 
-                        volume = ohlcv['volume'].iloc[0]
-                        if volume > 0:  # 거래량이 0인 경우 제외
-                            market_cap = price * volume
-                            market_caps.append((ticker, market_cap))
+                        time.sleep(0.1)  # API 호출 제한 방지
 
-                    # API 호출 제한을 피하기 위한 짧은 대기
-                    time.sleep(0.1)
-
-                except Exception as e:
-                    self.send_telegram_message(f"⚠️ {ticker} 시가총액 계산 중 오류: {str(e)}")
-                    continue
+                    except Exception as e:
+                        self.send_telegram_message(f"⚠️ {market['market']} 시가총액 조회 중 오류: {str(e)}")
+                        continue
 
             if not market_caps:
                 raise Exception("시가총액 계산 가능한 코인이 없습니다.")
@@ -127,9 +134,17 @@ class UpbitMomentumStrategy:
             sorted_market_caps = sorted(market_caps, key=lambda x: x[1], reverse=True)
             top_20 = sorted_market_caps[:20]
 
-            # 로그 출력
-            self.send_telegram_message(f"📊 시가총액 상위 20개 코인 조회 완료\n" +
-                                       "\n".join([f"{i + 1}. {item[0]}" for i, item in enumerate(top_20)]))
+            # 로그 출력 (시가총액, 현재가, 24시간 거래대금 포함)
+            message_parts = ["📊 시가총액 상위 20개 코인"]
+            for i, (ticker, market_cap, price, trade_amount) in enumerate(top_20):
+                message_parts.append(
+                    f"{i + 1}. {ticker}\n"
+                    f"   시가총액: {market_cap:,.0f}원\n"
+                    f"   현재가: {price:,.0f}원\n"
+                    f"   24시간 거래대금: {trade_amount:,.0f}원"
+                )
+
+            self.send_telegram_message("\n".join(message_parts))
 
             return [item[0] for item in top_20]
 
