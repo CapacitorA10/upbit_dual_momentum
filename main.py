@@ -107,6 +107,7 @@ class UpbitMomentumStrategy:
     def check_loss_threshold(self, threshold=-10):
         """
         보유 중인 코인들의 손실이 임계값(-10%) 이상인지 확인
+        1만원 이상 보유 중인 코인만 체크
 
         Parameters:
         threshold (float): 손실 임계값 (기본값: -10%)
@@ -117,28 +118,37 @@ class UpbitMomentumStrategy:
         try:
             # 수동 보유 코인을 제외한 현재 보유 코인들 확인
             balances = self.upbit.get_balances()
-            self.send_telegram_message(balances)
-            self.send_telegram_message(f"🔍 보유 중인 코인: {', '.join([balance['currency'] for balance in balances])}")
             for balance in balances:
                 currency = balance['currency']
                 if currency not in self.manual_holdings and currency != 'KRW':
+                    # 보유 금액이 1만원 이상인 코인만 체크
+                    current_balance = float(balance['balance'])
+                    avg_buy_price = float(balance['avg_buy_price'])
+                    total_value = current_balance * avg_buy_price
+
+                    if total_value < 10000:  # 1만원 미만 스킵
+                        continue
+
                     ticker = f"KRW-{currency}"
 
-                    # 매수 평균가
-                    avg_buy_price = float(balance['avg_buy_price'])
-                    # 현재가
+                    # 현재가 조회
                     current_price = pyupbit.get_current_price(ticker)
 
                     if current_price is None:
+                        self.send_telegram_message(f"⚠️ {ticker}의 현재가를 조회할 수 없습니다. (상장폐지 의심)")
                         continue
 
                     # 수익률 계산
                     profit_rate = ((current_price - avg_buy_price) / avg_buy_price) * 100
 
                     # 설정한 손실 임계값 이상인지 확인
-                    if profit_rate <= threshold:
+                    if profit_rate <= threshold or True:
                         self.send_telegram_message(
-                            f"⚠️ {ticker}의 손실률이 {profit_rate:.2f}%로 임계값({threshold}%)을 초과했습니다."
+                            f"⚠️ {ticker}의 손실률이 {profit_rate:.2f}%로 임계값({threshold}%)을 초과했습니다.\n"
+                            f"보유수량: {current_balance:.8f}\n"
+                            f"평균단가: {avg_buy_price:,.0f}원\n"
+                            f"현재가: {current_price:,.0f}원\n"
+                            f"평가금액: {total_value:,.0f}원"
                         )
                         return True
 
@@ -304,7 +314,6 @@ class UpbitMomentumStrategy:
             try:
                 current_time = datetime.now()
                 btc_above_ma = self.get_btc_ma120()
-                self.send_telegram_message("bitcoin 120MA: " + str(btc_above_ma))
                 has_significant_loss = self.check_loss_threshold()
                 time_since_last_rebalance = (current_time - last_rebalance_time).total_seconds() / 60  # 분 단위
                 exit()
