@@ -217,7 +217,8 @@ class UpbitMomentumStrategy:
             # 전체 매도 로직
             current_holdings = [balance['currency'] for balance in self.upbit.get_balances()
                                 if float(balance['balance']) > 0 and
-                                balance['currency'] not in self.manual_holdings]
+                                balance['currency'] not in self.manual_holdings and
+                                float(balance['balance']) * float(balance['avg_buy_price']) >= 10000]
 
             for coin in current_holdings:
                 ticker = f"KRW-{coin}"
@@ -280,7 +281,8 @@ class UpbitMomentumStrategy:
         try:
             current_holdings = [balance['currency'] for balance in self.upbit.get_balances()
                                 if float(balance['balance']) > 0 and
-                                balance['currency'] not in self.manual_holdings]
+                                balance['currency'] not in self.manual_holdings and
+                                float(balance['balance']) * float(balance['avg_buy_price']) >= 10000]
 
             for coin in current_holdings:
                 ticker = f"KRW-{coin}"
@@ -314,14 +316,13 @@ class UpbitMomentumStrategy:
             try:
                 current_time = datetime.now()
                 btc_above_ma = self.get_btc_ma120()
-                has_significant_loss = self.check_loss_threshold()
+                has_significant_loss = self.check_loss_threshold() # 단 1개의 코인이라도 -10% 이상 손실이 있다면 바로 return
                 time_since_last_rebalance = (current_time - last_rebalance_time).total_seconds() / 60  # 분 단위
-                exit()
 
                 # BTC가 120MA 아래로 떨어진 경우
                 if not btc_above_ma:
                     if not is_trading_suspended:
-                        message = "💡 BTC가 120일 이평선 아래로 떨어져 전체 매도 후 매매를 중지합니다."
+                        message = "😱 BTC가 120일 이평선 아래로 떨어져 전체 매도 후 매매를 중지합니다."
                         self.send_telegram_message(message)
                         self.sell_all_positions()  # 전체 포지션 매도
                         is_trading_suspended = True
@@ -329,7 +330,7 @@ class UpbitMomentumStrategy:
 
                 # BTC가 120MA 위로 올라온 경우
                 elif btc_above_ma and is_trading_suspended:
-                    message = "✅ BTC가 120일 이평선 위로 올라왔습니다. 매매를 재개합니다."
+                    message = "✅ BTC가 120일 이평선 위 올라왔습니다. 매매를 재개합니다."
                     self.send_telegram_message(message)
                     is_trading_suspended = False
                     self.execute_trades()  # 초기 포지션 진입
