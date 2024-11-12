@@ -216,7 +216,6 @@ class UpbitMomentumStrategy:
         모멘텀 상위 3개 코인 선정
         """
         top20 = self.get_top20_market_cap()
-        self.send_telegram_message(f"🔍 시가총액 상위 20개 코인: {', '.join(top20)}")
         returns = self.calculate_7day_returns(top20)
         self.send_telegram_message(f"📈 7일 수익률: {returns}")
 
