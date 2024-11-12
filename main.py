@@ -90,19 +90,52 @@ class UpbitMomentumStrategy:
         """
         시가총액 상위 20개 코인 조회 (제외 코인 제외)
         """
-        tickers = pyupbit.get_tickers(fiat="KRW")
-        market_caps = []
+        try:
+            tickers = pyupbit.get_tickers(fiat="KRW")
+            market_caps = []
 
-        for ticker in tickers:
-            symbol = ticker.split('-')[1]
-            if symbol not in self.exclude_coins:
-                price = pyupbit.get_current_price(ticker)
-                if price:
-                    market_cap = price * pyupbit.get_ohlcv(ticker, count=1)['volume'].iloc[0]
-                    market_caps.append((ticker, market_cap))
+            for ticker in tickers:
+                try:
+                    symbol = ticker.split('-')[1]
+                    if symbol not in self.exclude_coins:
+                        # 현재가 조회
+                        price = pyupbit.get_current_price(ticker)
+                        if price is None:
+                            continue
 
-        return [item[0] for item in sorted(market_caps,
-                                           key=lambda x: x[1], reverse=True)[:20]]
+                        # OHLCV 데이터 조회
+                        ohlcv = pyupbit.get_ohlcv(ticker, count=1)
+                        if ohlcv is None or ohlcv.empty:
+                            continue
+
+                        volume = ohlcv['volume'].iloc[0]
+                        if volume > 0:  # 거래량이 0인 경우 제외
+                            market_cap = price * volume
+                            market_caps.append((ticker, market_cap))
+
+                    # API 호출 제한을 피하기 위한 짧은 대기
+                    time.sleep(0.1)
+
+                except Exception as e:
+                    self.send_telegram_message(f"⚠️ {ticker} 시가총액 계산 중 오류: {str(e)}")
+                    continue
+
+            if not market_caps:
+                raise Exception("시가총액 계산 가능한 코인이 없습니다.")
+
+            # 시가총액 기준 정렬 및 상위 20개 추출
+            sorted_market_caps = sorted(market_caps, key=lambda x: x[1], reverse=True)
+            top_20 = sorted_market_caps[:20]
+
+            # 로그 출력
+            self.send_telegram_message(f"📊 시가총액 상위 20개 코인 조회 완료\n" +
+                                       "\n".join([f"{i + 1}. {item[0]}" for i, item in enumerate(top_20)]))
+
+            return [item[0] for item in top_20]
+
+        except Exception as e:
+            self.send_telegram_message(f"❌ 시가총액 상위 코인 조회 중 오류 발생: {str(e)}")
+            return []  # 오류 발생 시 빈 리스트 반환
 
     def check_loss_threshold(self, threshold=-10):
         """
@@ -297,7 +330,8 @@ class UpbitMomentumStrategy:
         - 보유 코인이 -10% 이상 손실일 때 리밸런싱
         - 최대 1주일 간격으로 리밸런싱
         """
-        last_rebalance_time = datetime.now()
+        # last rebalance time은 현재 시간부터 1달 전
+        last_rebalance_time = datetime.now() - timedelta(days=30)
         is_trading_suspended = False  # 매매 중지 상태 추적
 
         while True:
