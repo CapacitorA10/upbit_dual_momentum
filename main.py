@@ -176,10 +176,13 @@ class UpbitMomentumStrategy:
         모멘텀 상위 3개 코인 선정
         """
         top20 = self.get_top20_market_cap()
+        self.send_telegram_message(f"🔍 시가총액 상위 20개 코인: {', '.join(top20)}")
         returns = self.calculate_7day_returns(top20)
+        self.send_telegram_message(f"📈 7일 수익률: {returns}")
 
         # 수익률 기준 정렬
         sorted_returns = sorted(returns.items(), key=lambda x: x[1], reverse=True)
+        self.send_telegram_message(f"🔝 7일 수익률 상위 3개: {sorted_returns[:3]}")
         return [coin[0] for coin in sorted_returns[:3]]
 
     def should_keep_coin(self, ticker):
@@ -205,74 +208,59 @@ class UpbitMomentumStrategy:
     def execute_trades(self):
         """
         매매 실행
+        - 현재 보유 중인 코인들과 새로운 매수 대상 코인들을 비교하여 리밸런싱
         """
-        btc_above_ma = self.get_btc_ma120()
-        message = f"🏛 BTC 120MA: {'상단 ✅' if btc_above_ma else '하단 ❌'}"
-        self.send_telegram_message(message)
-
-        if not btc_above_ma:
-            message = "💡 BTC가 120일 이평선 아래에 있어 전체 매도를 진행합니다."
-            self.send_telegram_message(message)
-
-            # 전체 매도 로직
-            current_holdings = [balance['currency'] for balance in self.upbit.get_balances()
-                                if float(balance['balance']) > 0 and
-                                balance['currency'] not in self.manual_holdings and
-                                float(balance['balance']) * float(balance['avg_buy_price']) >= 10000]
-
-            for coin in current_holdings:
-                ticker = f"KRW-{coin}"
-                balance = self.upbit.get_balance(coin)
-                if balance > 0:
-                    try:
-                        self.send_telegram_message(f"🔄 {ticker} 전량 매도 시도 중...")
-                        self.upbit.sell_market_order(ticker, balance)
-                        self.send_telegram_message(f"✅ {ticker} 매도 완료")
-
-                        if ticker in self.holding_periods:
-                            del self.holding_periods[ticker]
-                        self.consecutive_holds[ticker] = 0
-                    except Exception as e:
-                        self.send_telegram_message(f"❌ {ticker} 매도 실패: {str(e)}")
-            return
-
-        # 현재 보유 중인 코인들 (수동 보유 코인 제외)
-        current_holdings = [balance['currency'] for balance in self.upbit.get_balances()
-                            if float(balance['balance']) > 0 and
-                            balance['currency'] not in self.manual_holdings]
+        # 현재 보유 중인 코인들 (수동 보유 코인 제외, 1만원 이상)
+        current_holdings = [
+            balance['currency']
+            for balance in self.upbit.get_balances()
+            if (float(balance['balance']) > 0 and
+                balance['currency'] not in self.manual_holdings and
+                float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
+        ]
 
         # 새로운 매수 대상 코인들
         target_coins = self.get_top3_momentum()
+        exit()
 
         # 매도 대상 파악
         for coin in current_holdings:
             ticker = f"KRW-{coin}"
             if ticker not in target_coins or not self.should_keep_coin(ticker):
-                # 매도 로직
-                self.upbit.sell_market_order(ticker, self.upbit.get_balance(coin))
-                if ticker in self.holding_periods:
-                    del self.holding_periods[ticker]
-                self.consecutive_holds[ticker] = 0
+                try:
+                    balance = self.upbit.get_balance(coin)
+                    self.send_telegram_message(f"🔄 {ticker} 전량 매도 시도 중...")
+                    self.upbit.sell_market_order(ticker, balance)
+                    self.send_telegram_message(f"✅ {ticker} 매도 완료")
+
+                    if ticker in self.holding_periods:
+                        del self.holding_periods[ticker]
+                    self.consecutive_holds[ticker] = 0
+                except Exception as e:
+                    self.send_telegram_message(f"❌ {ticker} 매도 실패: {str(e)}")
 
         # 매수 대상 파악
         krw_balance = float(self.upbit.get_balance("KRW"))
         if krw_balance > 0:
             # 현재 자동매매로 보유 중인 코인 수 확인
-            auto_holdings_count = len([coin for coin in current_holdings
-                                       if coin not in self.manual_holdings])
+            auto_holdings_count = len(current_holdings)
+
             # 남은 슬롯 수에 따라 투자금액 조정
-            remaining_slots = 3 - auto_holdings_count
+            remaining_slots = self.max_slots - auto_holdings_count
             if remaining_slots > 0:
                 invest_amount = krw_balance / remaining_slots  # 남은 슬롯 기준 균등 분할 투자
-            else:
-                invest_amount = 0
 
-            for ticker in target_coins:
-                if ticker not in [f"KRW-{coin}" for coin in current_holdings]:
-                    # 매수 로직
-                    self.upbit.buy_market_order(ticker, invest_amount)
-                    self.holding_periods[ticker] = datetime.now()
-                    self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
+                for ticker in target_coins:
+                    if ticker not in [f"KRW-{coin}" for coin in current_holdings]:
+                        try:
+                            self.send_telegram_message(f"🛒 {ticker} 매수 시도 중... (금액: {invest_amount:,.0f}원)")
+                            self.upbit.buy_market_order(ticker, invest_amount)
+                            self.send_telegram_message(f"✅ {ticker} 매수 완료")
+
+                            self.holding_periods[ticker] = datetime.now()
+                            self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
+                        except Exception as e:
+                            self.send_telegram_message(f"❌ {ticker} 매수 실패: {str(e)}")
 
     def sell_all_positions(self):
         """
