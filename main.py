@@ -177,7 +177,7 @@ class UpbitMomentumStrategy:
 
                     # 현재가 조회
                     current_price = pyupbit.get_current_price(ticker)
-
+                    time.sleep(0.1) # 요청 제한을 피하기 위한 대기 시간
                     if current_price is None:
                         self.send_telegram_message(f"⚠️ {ticker}의 현재가를 조회할 수 없습니다. (상장폐지 의심)")
                         continue
@@ -186,7 +186,7 @@ class UpbitMomentumStrategy:
                     profit_rate = ((current_price - avg_buy_price) / avg_buy_price) * 100
 
                     # 설정한 손실 임계값 이상인지 확인
-                    if profit_rate <= threshold or True:
+                    if profit_rate <= threshold:
                         self.send_telegram_message(
                             f"⚠️ {ticker}의 손실률이 {profit_rate:.2f}%로 임계값({threshold}%)을 초과했습니다.\n"
                             f"보유수량: {current_balance:.8f}\n"
@@ -292,6 +292,10 @@ class UpbitMomentumStrategy:
             remaining_slots = self.max_slots - auto_holdings_count
             if remaining_slots > 0:
                 invest_amount = krw_balance / remaining_slots  # 남은 슬롯 기준 균등 분할 투자
+
+                if invest_amount < 5000:  # 업비트 최소 거래금액
+                    self.send_telegram_message(f"⚠️ 투자금액({invest_amount:,.0f}원)이 최소 거래금액(5,000원) 미만입니다.")
+                    return
 
                 for ticker in target_coins:
                     if ticker not in [f"KRW-{coin}" for coin in current_holdings]:
