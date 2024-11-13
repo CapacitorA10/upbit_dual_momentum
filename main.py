@@ -292,7 +292,8 @@ class UpbitMomentumStrategy:
             remaining_slots = self.max_slots - auto_holdings_count
             if remaining_slots > 0:
                 invest_amount = krw_balance / remaining_slots  # 남은 슬롯 기준 균등 분할 투자
-
+                # 1000원 단위 절삭
+                invest_amount = int(invest_amount / 1000) * 1000
                 if invest_amount < 5000:  # 업비트 최소 거래금액
                     self.send_telegram_message(f"⚠️ 투자금액({invest_amount:,.0f}원)이 최소 거래금액(5,000원) 미만입니다.")
                     return
