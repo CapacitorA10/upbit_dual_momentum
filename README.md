@@ -51,7 +51,7 @@
 ## 실행 방법
 
 ```bash
-python momentum_bot.py
+python main.py
 ```
 
 ## 주의사항
