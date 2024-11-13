@@ -209,6 +209,7 @@ class UpbitMomentumStrategy:
         returns = {}
         for ticker in tickers:
             df = pyupbit.get_ohlcv(ticker, interval="day", count=8)
+            time.sleep(0.2) # 요청 제한을 피하기 위한 대기 시간
             if df is not None and len(df) >= 7:
                 seven_day_return = (df['close'].iloc[-1] - df['close'].iloc[-7]) / df['close'].iloc[-7] * 100
                 returns[ticker] = seven_day_return
@@ -264,7 +265,6 @@ class UpbitMomentumStrategy:
 
         # 새로운 매수 대상 코인들
         target_coins = self.get_top3_momentum()
-        exit()
 
         # 매도 대상 파악
         for coin in current_holdings:
