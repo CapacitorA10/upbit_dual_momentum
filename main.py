@@ -88,60 +88,64 @@ class UpbitMomentumStrategy:
 
     def get_top20_market_cap(self):
         """
-        매핑된 코인들의 시가총액 기준 상위 20개 코인 조회
+        시가총액 상위 20개 코인 조회 (제외 코인 제외)
+        CoinGecko API를 활용하여 실제 시가총액 기준으로 정렬
         """
         try:
-            # 매핑 테이블 로드
-            with open('coin_mappings.json', 'r') as f:
-                mappings = json.load(f)
+            # 업비트 상장 코인 목록 가져오기
+            tickers = pyupbit.get_tickers(fiat="KRW")
+            symbols = [ticker.split('-')[1] for ticker in tickers]
 
-            # 코인게코 API URL
-            coingecko_ids = ','.join(mappings.values())  # 매핑된 모든 코인게코 심볼
-            url = f"https://api.coingecko.com/api/v3/simple/price"
+            # CoinGecko에서 상위 300위 코인 목록 가져오기
+            url = "https://api.coingecko.com/api/v3/coins/markets"
             params = {
-                'ids': coingecko_ids,
-                'vs_currencies': 'usd',
-                'include_market_cap': 'true'
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": 300,
+                "page": 1,
+                "sparkline": False  # 불필요한 데이터 제외
             }
 
-            # API 호출
             response = requests.get(url, params=params)
             if response.status_code != 200:
-                raise Exception(f"코인게코 API 오류: {response.status_code}")
+                raise Exception(f"CoinGecko API 오류: {response.status_code}")
 
-            data = response.json()
+            top_300_coins = response.json()
 
-            # 시가총액 정보 추출 및 정렬
+            # CoinGecko 심볼 기준으로 코인 데이터 매핑
+            coin_gecko_symbol_map = {coin['symbol'].upper(): coin for coin in top_300_coins}
+
+            # 업비트 코인들의 시가총액 매핑
             market_caps = []
-            for upbit_symbol, gecko_symbol in mappings.items():
-                try:
-                    if gecko_symbol in data:
-                        market_cap = data[gecko_symbol].get('usd_market_cap')
-                        if market_cap:
-                            market_caps.append({
-                                'symbol': upbit_symbol,
-                                'market_cap': market_cap,
-                                'market_cap_billion': market_cap / 1_000_000_000  # 10억 달러 단위
-                            })
-                except Exception as e:
-                    self.send_telegram_message(f"⚠️ {upbit_symbol} 시가총액 처리 중 오류: {str(e)}")
-                    continue
+            for symbol in symbols:
+                if symbol not in self.exclude_coins:
+                    if symbol in coin_gecko_symbol_map:
+                        coin_data = coin_gecko_symbol_map[symbol]
+                        market_cap = coin_data['market_cap']
+                        if market_cap:  # None이나 0이 아닌 경우만 추가
+                            market_caps.append((f"KRW-{symbol}", market_cap, coin_data['market_cap_rank']))
 
-            # 시가총액 기준 정렬
-            sorted_coins = sorted(market_caps, key=lambda x: x['market_cap'], reverse=True)
-            top_20 = sorted_coins[:20]
+            if not market_caps:
+                raise Exception("시가총액 계산 가능한 코인이 없습니다.")
 
-            # 결과 로깅
-            message = "📊 시가총액 상위 20개 코인:\n"
-            for i, coin in enumerate(top_20, 1):
-                message += f"{i}. {coin['symbol']}: ${coin['market_cap_billion']:.2f}B\n"
-            self.send_telegram_message(message)
+            # 시가총액 기준 정렬 및 상위 20개 추출
+            sorted_market_caps = sorted(market_caps, key=lambda x: x[1], reverse=True)
+            top_20 = sorted_market_caps[:20]
 
-            # 업비트 티커 형식으로 변환하여 반환
-            return [f"KRW-{coin['symbol']}" for coin in top_20]
+            # 로그 출력
+            market_cap_msg = "📊 시가총액 상위 20개 코인:\n"
+            for i, (ticker, cap, rank) in enumerate(top_20):
+                market_cap_billion_usd = cap / 1_000_000_000  # 10억 달러 단위로 변환
+                market_cap_msg += (f"{i + 1}. {ticker} "
+                                   f"(세계 순위: #{rank}) - "
+                                   f"${market_cap_billion_usd:.1f}B\n")
+            self.send_telegram_message(market_cap_msg)
+
+            return [item[0] for item in top_20]
 
         except Exception as e:
-            self.send_telegram_message(f"❌ 시가총액 정보 조회 중 오류 발생: {str(e)}")
+            self.send_telegram_message(f"❌ 시가총액 상위 코인 조회 중 오류 발생: {str(e)}")
+            time.sleep(1)  # API 오류 시 잠시 대기
             return []
 
     def check_loss_threshold(self, threshold=-10):
