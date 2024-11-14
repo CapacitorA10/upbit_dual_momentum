@@ -425,18 +425,23 @@ class UpbitMomentumStrategy:
         - BTC가 120일 이평선 아래일 때 전량 매도하고 매수 중지
         - BTC가 120일 이평선 위로 올라올 때 매수 알고리즘 재개
         - 보유 코인이 -10% 이상 손실일 때 리밸런싱
-        - 최대 1주일 간격으로 리밸런싱
+        - 가장 오래된 보유 코인 기준으로 1주일 간격 리밸런싱
         """
-        # last rebalance time은 현재 시간부터 1달 전
-        last_rebalance_time = datetime.now() - timedelta(days=30)
         is_trading_suspended = False  # 매매 중지 상태 추적
 
         while True:
             try:
                 current_time = datetime.now()
                 btc_above_ma = self.get_btc_ma120()
-                has_significant_loss = self.check_loss_threshold() # 단 1개의 코인이라도 -10% 이상 손실이 있다면 바로 return
-                time_since_last_rebalance = (current_time - last_rebalance_time).total_seconds() / 60  # 분 단위
+                has_significant_loss = self.check_loss_threshold()
+
+                # 가장 오래된 보유 시간 체크
+                oldest_holding_time = None
+                if self.holding_periods:
+                    oldest_holding_time = min(self.holding_periods.values())
+                    time_since_oldest_holding = (current_time - oldest_holding_time).total_seconds() / 60  # 분 단위
+                else:
+                    time_since_oldest_holding = 9999999
 
                 # BTC가 120MA 아래로 떨어진 경우
                 if not btc_above_ma:
@@ -445,21 +450,20 @@ class UpbitMomentumStrategy:
                         self.send_telegram_message(message)
                         self.sell_all_positions()  # 전체 포지션 매도
                         is_trading_suspended = True
-                        last_rebalance_time = current_time
 
                 # BTC가 120MA 위로 올라온 경우
                 elif btc_above_ma and is_trading_suspended:
                     message = "✅ BTC가 120일 이평선 위 올라왔습니다. 매매를 재개합니다."
                     self.send_telegram_message(message)
                     is_trading_suspended = False
-                    self.execute_trades()  # 초기 포지션 진입
-                    last_rebalance_time = current_time
+                    self.execute_trades()
 
                 # 정상 매매 상태에서의 리밸런싱 조건 체크
                 elif not is_trading_suspended:
                     should_rebalance = (
                             has_significant_loss or  # -10% 이상 손실 발생
-                            time_since_last_rebalance >= self.rebalancing_interval  # 1주일 경과
+                            (oldest_holding_time and time_since_oldest_holding >= self.rebalancing_interval)
+                    # 가장 오래된 보유 코인이 기준 시간 초과
                     )
 
                     if should_rebalance:
@@ -467,13 +471,14 @@ class UpbitMomentumStrategy:
                             "🔄 <b>리밸런싱 실행</b>",
                             f"시간: {current_time.strftime('%Y-%m-%d %H:%M:%S')}",
                             f"BTC 120MA: {'상단 ✅' if btc_above_ma else '하단 ❌'}",
-                            f"큰 손실 발생: {'예 ⚠️' if has_significant_loss else '아니오 ✅'}",
-                            f"마지막 리밸런싱 후 경과: {time_since_last_rebalance:.1f}분"
+                            f"큰 손실 발생: {'예 ⚠️' if has_significant_loss else '아니오 ✅'}"
                         ]
+
+                        if oldest_holding_time:
+                            message_parts.append(f"가장 오래된 보유 시간: {time_since_oldest_holding:.1f}분")
 
                         self.send_telegram_message("\n".join(message_parts))
                         self.execute_trades()
-                        last_rebalance_time = current_time
 
                 # 1분 간격으로 체크
                 time.sleep(60)
