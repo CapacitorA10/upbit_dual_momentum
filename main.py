@@ -433,6 +433,19 @@ class UpbitMomentumStrategy:
             try:
                 current_time = datetime.now()
                 btc_above_ma = self.get_btc_ma120()
+
+                # 보유 코인 체크
+                current_holdings = [
+                    balance['currency']
+                    for balance in self.upbit.get_balances()
+                    if (float(balance['balance']) > 0 and
+                        balance['currency'] not in self.manual_holdings and
+                        float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
+                ]
+                # 보유 코인 개수 및 이름 반환
+                holding_count = len(current_holdings)
+                holding_names = [f"KRW-{coin}" for coin in current_holdings]
+
                 has_significant_loss = self.check_loss_threshold()
 
                 # 가장 오래된 보유 시간 체크
@@ -462,8 +475,9 @@ class UpbitMomentumStrategy:
                 elif not is_trading_suspended:
                     should_rebalance = (
                             has_significant_loss or  # -10% 이상 손실 발생
-                            (oldest_holding_time and time_since_oldest_holding >= self.rebalancing_interval)
-                    # 가장 오래된 보유 코인이 기준 시간 초과
+                            (oldest_holding_time and time_since_oldest_holding >= self.rebalancing_interval) or # 가장 오래된 보유 코인이 기준 시간 초과
+                            holding_count < 3 #  보유 코인 3개 미만
+
                     )
 
                     if should_rebalance:
@@ -471,7 +485,8 @@ class UpbitMomentumStrategy:
                             "🔄 <b>리밸런싱 실행</b>",
                             f"시간: {current_time.strftime('%Y-%m-%d %H:%M:%S')}",
                             f"BTC 120MA: {'상단 ✅' if btc_above_ma else '하단 ❌'}",
-                            f"큰 손실 발생: {'예 ⚠️' if has_significant_loss else '아니오 ✅'}"
+                            f"큰 손실 발생: {'예 ⚠️' if has_significant_loss else '아니오 ✅'}",
+                            f"보유 코인 수: {holding_count}개: {holding_names}",
                         ]
 
                         if oldest_holding_time:
