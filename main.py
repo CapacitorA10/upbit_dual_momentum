@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import os
 import requests
+import signal
 
 
 class UpbitMomentumStrategy:
@@ -43,6 +44,7 @@ class UpbitMomentumStrategy:
             # 시작 메시지 전송
             self.send_telegram_message("🤖 자동매매 봇이 시작되었습니다.")
             self.sync_holdings_with_current_state()
+            self.setup_signal_handlers()
 
         except Exception as e:
             raise Exception(f"초기화 중 오류 발생: {str(e)}")
@@ -68,6 +70,16 @@ class UpbitMomentumStrategy:
 
         except Exception as e:
             print(f"텔레그램 메시지 전송 중 오류 발생: {str(e)}")
+
+    def setup_signal_handlers(self):
+        def signal_handler(signum, frame):
+            signal_name = signal.Signals(signum).name
+            message = f"⚠️ 프로그램이 {signal_name}에 의해 종료되었습니다."
+            self.send_telegram_message(message)
+            exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # kill 명령
 
     def get_btc_ma120(self):
         """
