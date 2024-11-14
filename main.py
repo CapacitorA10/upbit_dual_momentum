@@ -12,9 +12,6 @@ class UpbitMomentumStrategy:
     def __init__(self, config_path='config.json'):
         """
         설정 파일에서 API 키와 설정을 로드하여 초기화
-
-        Parameters:
-        config_path (str): JSON 설정 파일 경로
         """
         try:
             # 설정 파일 로드
@@ -35,23 +32,18 @@ class UpbitMomentumStrategy:
             # 트레이딩 설정 로드
             self.manual_holdings = config['trading']['manual_holdings']
             base_exclude_coins = config['trading']['exclude_coins']
-            self.exclude_coins = base_exclude_coins + self.manual_holdings  # 기본 제외 코인 + 수동 보유 코인
-            self.max_slots = config['trading'].get('max_slots', 3)  # 기본값 3
-            self.rebalancing_interval = config['trading'].get('rebalancing_interval', 10080)  # 기본값 1주일
+            self.exclude_coins = base_exclude_coins + self.manual_holdings
+            self.max_slots = config['trading'].get('max_slots', 3)
+            self.rebalancing_interval = config['trading'].get('rebalancing_interval', 10080)
 
-            # 트래킹 변수 초기화
-            self.holding_periods = {}  # 코인별 보유 기간 추적
-            self.consecutive_holds = {}  # 연속 보유 횟수 추적
+            # 기존 보유 정보 로드
+            self.holdings_file = 'holdings_data.json'
+            self.load_holdings_data()
 
             # 시작 메시지 전송
             self.send_telegram_message("🤖 자동매매 봇이 시작되었습니다.")
+            self.sync_holdings_with_current_state()
 
-        except FileNotFoundError:
-            raise Exception(f"설정 파일을 찾을 수 없습니다: {config_path}")
-        except json.JSONDecodeError:
-            raise Exception(f"설정 파일 형식이 잘못되었습니다: {config_path}")
-        except KeyError as e:
-            raise Exception(f"필수 설정이 누락되었습니다: {str(e)}")
         except Exception as e:
             raise Exception(f"초기화 중 오류 발생: {str(e)}")
 
@@ -249,66 +241,144 @@ class UpbitMomentumStrategy:
 
         return True
 
+    def load_holdings_data(self):
+        """보유 정보 파일에서 데이터 로드"""
+        try:
+            if os.path.exists(self.holdings_file):
+                with open(self.holdings_file, 'r') as f:
+                    data = json.load(f)
+                    self.holding_periods = {k: datetime.fromisoformat(v) for k, v in data['holding_periods'].items()}
+                    self.consecutive_holds = data['consecutive_holds']
+            else:
+                self.holding_periods = {}
+                self.consecutive_holds = {}
+        except Exception as e:
+            self.send_telegram_message(f"보유 정보 로드 중 오류 발생: {str(e)}")
+            self.holding_periods = {}
+            self.consecutive_holds = {}
+
+    def save_holdings_data(self):
+        """보유 정보를 파일에 저장"""
+        try:
+            data = {
+                'holding_periods': {k: v.isoformat() for k, v in self.holding_periods.items()},
+                'consecutive_holds': self.consecutive_holds
+            }
+            with open(self.holdings_file, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            self.send_telegram_message(f"보유 정보 저장 중 오류 발생: {str(e)}")
+
+    def sync_holdings_with_current_state(self):
+        """현재 실제 보유 상태와 기록된 보유 정보 동기화"""
+        try:
+            # 실제 보유 중인 코인 확인
+            current_holdings = {
+                f"KRW-{balance['currency']}"
+                for balance in self.upbit.get_balances()
+                if (float(balance['balance']) > 0 and
+                    balance['currency'] not in self.manual_holdings and
+                    float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
+            }
+
+            # 기록된 보유 정보와 실제 보유 상태 비교 및 동기화
+            recorded_holdings = set(self.holding_periods.keys())
+
+            # 더 이상 보유하지 않는 코인 제거
+            for ticker in recorded_holdings - current_holdings:
+                del self.holding_periods[ticker]
+                self.consecutive_holds[ticker] = 0
+
+            # 새로 보유한 코인 추가 (처음 시작할 때)
+            for ticker in current_holdings - recorded_holdings:
+                self.holding_periods[ticker] = datetime.now()
+                self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
+
+            self.save_holdings_data()
+
+            holdings_msg = "📊 현재 보유 코인 상태:\n"
+            for ticker in current_holdings:
+                holding_time = datetime.now() - self.holding_periods[ticker]
+                holdings_msg += f"{ticker}: {holding_time.days}일 {holding_time.seconds // 3600}시간 보유 중\n"
+            self.send_telegram_message(holdings_msg)
+
+        except Exception as e:
+            self.send_telegram_message(f"보유 상태 동기화 중 오류 발생: {str(e)}")
+
     def execute_trades(self):
-        """
-        매매 실행
-        - 현재 보유 중인 코인들과 새로운 매수 대상 코인들을 비교하여 리밸런싱
-        """
-        # 현재 보유 중인 코인들 (수동 보유 코인 제외, 1만원 이상)
-        current_holdings = [
-            balance['currency']
-            for balance in self.upbit.get_balances()
-            if (float(balance['balance']) > 0 and
-                balance['currency'] not in self.manual_holdings and
-                float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
-        ]
+        """매매 실행 - 현재 보유 중인 코인들과 새로운 매수 대상 코인들을 비교하여 리밸런싱"""
+        try:
+            # 현재 보유 중인 코인들 확인 (수동 보유 코인 제외, 1만원 이상)
+            current_holdings = [
+                balance['currency']
+                for balance in self.upbit.get_balances()
+                if (float(balance['balance']) > 0 and
+                    balance['currency'] not in self.manual_holdings and
+                    float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
+            ]
 
-        # 새로운 매수 대상 코인들
-        target_coins = self.get_top3_momentum()
+            # 새로운 매수 대상 코인들
+            target_coins = self.get_top3_momentum()
 
-        # 매도 대상 파악
-        for coin in current_holdings:
-            ticker = f"KRW-{coin}"
-            if ticker not in target_coins or not self.should_keep_coin(ticker):
-                try:
-                    balance = self.upbit.get_balance(coin)
-                    self.send_telegram_message(f"🔄 {ticker} 전량 매도 시도 중...")
-                    self.upbit.sell_market_order(ticker, balance)
-                    self.send_telegram_message(f"✅ {ticker} 매도 완료")
+            # 매도 대상 파악 및 매도
+            sold_coins = []  # 매도된 코인 추적
+            for coin in current_holdings:
+                ticker = f"KRW-{coin}"
+                if ticker not in target_coins or not self.should_keep_coin(ticker):
+                    try:
+                        balance = self.upbit.get_balance(coin)
+                        self.send_telegram_message(f"🔄 {ticker} 전량 매도 시도 중...")
+                        self.upbit.sell_market_order(ticker, balance)
+                        self.send_telegram_message(f"✅ {ticker} 매도 완료")
 
-                    if ticker in self.holding_periods:
-                        del self.holding_periods[ticker]
-                    self.consecutive_holds[ticker] = 0
-                except Exception as e:
-                    self.send_telegram_message(f"❌ {ticker} 매도 실패: {str(e)}")
+                        # 매도 성공한 코인 기록
+                        sold_coins.append(coin)
 
-        # 매수 대상 파악
-        krw_balance = float(self.upbit.get_balance("KRW"))
-        if krw_balance > 0:
-            # 현재 자동매매로 보유 중인 코인 수 확인
-            auto_holdings_count = len(current_holdings)
+                        if ticker in self.holding_periods:
+                            del self.holding_periods[ticker]
+                        self.consecutive_holds[ticker] = 0
+                    except Exception as e:
+                        self.send_telegram_message(f"❌ {ticker} 매도 실패: {str(e)}")
 
-            # 남은 슬롯 수에 따라 투자금액 조정
-            remaining_slots = self.max_slots - auto_holdings_count
-            if remaining_slots > 0:
-                invest_amount = krw_balance / remaining_slots  # 남은 슬롯 기준 균등 분할 투자
-                # 1000원 단위 절삭
-                invest_amount = int(invest_amount / 1000) * 1000
-                if invest_amount < 5000:  # 업비트 최소 거래금액
-                    self.send_telegram_message(f"⚠️ 투자금액({invest_amount:,.0f}원)이 최소 거래금액(5,000원) 미만입니다.")
-                    return
+            # 매도된 코인들을 current_holdings에서 제거
+            current_holdings = [coin for coin in current_holdings if coin not in sold_coins]
 
-                for ticker in target_coins:
-                    if ticker not in [f"KRW-{coin}" for coin in current_holdings]:
-                        try:
-                            self.send_telegram_message(f"🛒 {ticker} 매수 시도 중... (금액: {invest_amount:,.0f}원)")
-                            self.upbit.buy_market_order(ticker, invest_amount)
-                            self.send_telegram_message(f"✅ {ticker} 매수 완료")
+            # 매수 대상 파악 및 매수
+            krw_balance = float(self.upbit.get_balance("KRW"))
+            if krw_balance > 0:
+                # 현재 자동매매로 보유 중인 코인 수 확인
+                auto_holdings_count = len(current_holdings)
 
-                            self.holding_periods[ticker] = datetime.now()
-                            self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
-                        except Exception as e:
-                            self.send_telegram_message(f"❌ {ticker} 매수 실패: {str(e)}")
+                # 남은 슬롯 수에 따라 투자금액 조정
+                remaining_slots = self.max_slots - auto_holdings_count
+                if remaining_slots > 0:
+                    invest_amount = krw_balance / remaining_slots
+                    invest_amount = int(invest_amount / 1000) * 1000
+                    if invest_amount < 5000:
+                        self.send_telegram_message(f"⚠️ 투자금액({invest_amount:,.0f}원)이 최소 거래금액(5,000원) 미만입니다.")
+                        return
+
+                    for ticker in target_coins:
+                        if ticker not in [f"KRW-{coin}" for coin in current_holdings]:
+                            try:
+                                self.send_telegram_message(f"🛒 {ticker} 매수 시도 중... (금액: {invest_amount:,.0f}원)")
+                                self.upbit.buy_market_order(ticker, invest_amount)
+                                self.send_telegram_message(f"✅ {ticker} 매수 완료")
+
+                                self.holding_periods[ticker] = datetime.now()
+                                self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
+
+                                # 매수 성공한 코인을 current_holdings에 추가
+                                current_holdings.append(ticker.split('-')[1])
+                            except Exception as e:
+                                self.send_telegram_message(f"❌ {ticker} 매수 실패: {str(e)}")
+
+            # 거래 완료 후 보유 정보 저장
+            self.save_holdings_data()
+
+        except Exception as e:
+            self.send_telegram_message(f"❌ 매매 실행 중 오류 발생: {str(e)}")
+
 
     def sell_all_positions(self):
         """
