@@ -84,6 +84,8 @@ class UpbitMomentumStrategy:
         try:
             for balance in self.upbit.get_balances():
                 currency = balance['currency']
+
+                # 수동 보유 코인은 손실률 체크 제외
                 if currency in self.manual_holdings or currency == 'KRW':
                     continue
 
@@ -176,14 +178,19 @@ class UpbitMomentumStrategy:
                     balance['currency'] not in self.manual_holdings and
                     float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
             }
+
             recorded = set(self.holding_periods.keys())
+
             for ticker in recorded - current_holdings:
                 del self.holding_periods[ticker]
                 self.consecutive_holds[ticker] = 0
+
             for ticker in current_holdings - recorded:
                 self.holding_periods[ticker] = datetime.now()
                 self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
+
             self.save_holdings_data()
+
         except Exception as e:
             self.send_telegram_message(f"보유 상태 동기화 중 오류 발생: {e}")
 
@@ -235,9 +242,12 @@ class UpbitMomentumStrategy:
         try:
             for balance in self.upbit.get_balances():
                 currency = balance['currency']
+
                 if currency in self.manual_holdings or float(balance['balance']) * float(balance['avg_buy_price']) < 10000:
                     continue
+
                 ticker = f"KRW-{currency}"
+
                 try:
                     balance_amt = self.upbit.get_balance(currency)
                     self.send_telegram_message(f"🔄 {ticker} 전량 매도 시도 중...")
@@ -245,8 +255,10 @@ class UpbitMomentumStrategy:
                     self.send_telegram_message(f"✅ {ticker} 매도 완료")
                     self.holding_periods.pop(ticker, None)
                     self.consecutive_holds[ticker] = 0
+
                 except Exception as e:
                     self.send_telegram_message(f"❌ {ticker} 매도 실패: {e}")
+
         except Exception as e:
             self.send_telegram_message(f"❌ 전체 매도 중 오류 발생: {e}")
 
@@ -254,8 +266,8 @@ class UpbitMomentumStrategy:
         is_suspended = False
         while True:
             try:
-                btc_above_ma = self.get_btc_ma120()
-                sold_coins = self.check_loss_threshold(threshold=-20)
+                btc_above_ma = self.get_btc_ma120() # BTC 120일 이평선 상위인지 확인
+                sold_coins = self.check_loss_threshold(threshold=-20) # 손절 체크 후 매도
                 self.sync_holdings_with_current_state()
 
                 if not btc_above_ma:
@@ -264,18 +276,32 @@ class UpbitMomentumStrategy:
                         self.sell_all_positions()
                         is_suspended = True
                 else:
-                    if is_suspended:
+                    if is_suspended: # 매매 재개 체크
                         self.send_telegram_message("✅ BTC가 120일 이평선 위 올라왔습니다. 매매를 재개합니다.")
                         is_suspended = False
                         self.execute_trades()
-                    elif sold_coins or (holding_count := len([
-                        balance['currency'] for balance in self.upbit.get_balances()
-                        if float(balance['balance']) > 0 and
-                           balance['currency'] not in self.manual_holdings and
-                           float(balance['balance']) * float(balance['avg_buy_price']) >= 10000
-                    ])) < self.max_slots:
-                        self.send_telegram_message("🔄 <b>리밸런싱 실행</b>")
-                        self.execute_trades()
+
+                # 리밸런싱 조건 체크
+                holding_count = len([
+                    balance['currency']
+                    for balance in self.upbit.get_balances()
+                    if (
+                            float(balance['balance']) > 0 and  # 잔액이 0보다 큰 경우
+                            balance['currency'] not in self.manual_holdings and  # manual_holdings에 없는 경우
+                            float(balance['balance']) * float(balance['avg_buy_price']) >= 10000  # 총 가치가 10,000 이상인 경우
+                    )
+                ])
+
+                # 손절 매도가 없고 보유 코인 수가 max_slots보다 작은 경우
+                if (not sold_coins) and (holding_count < self.max_slots) and (not is_suspended):
+                    self.send_telegram_message(f"보유 코인이 {self.max_slots}개 보다 적은 상태입니다. 매매를 실행합니다.")
+                    self.execute_trades()
+                # 리밸런싱 주기마다 매매 실행
+                elif (self.last_purchase_time is not None) and (
+                        (datetime.now() - self.last_purchase_time).total_seconds() >= self.rebalancing_interval):
+                    self.send_telegram_message(f"리밸런싱 주기가 도래하여 매매를 실행합니다.")
+                    self.execute_trades()
+
 
                 time.sleep(60)
             except Exception as e:
