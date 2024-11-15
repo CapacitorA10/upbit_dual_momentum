@@ -36,6 +36,7 @@ class UpbitMomentumStrategy:
             self.exclude_coins = base_exclude_coins + self.manual_holdings
             self.max_slots = config['trading'].get('max_slots', 3)
             self.rebalancing_interval = config['trading'].get('rebalancing_interval', 10080)
+            self.last_purchase_time = None
 
             # 기존 보유 정보 로드
             self.holdings_file = 'holdings_data.json'
@@ -154,34 +155,32 @@ class UpbitMomentumStrategy:
 
     def check_loss_threshold(self, threshold=-10):
         """
-        보유 중인 코인들의 손실이 임계값(-10%) 이상인지 확인
-        1만원 이상 보유 중인 코인만 체크
+        보유 중인 코인들의 손실이 임계값(-10%) 이상인지 확인하고, 해당 코인만 매도
 
         Parameters:
         threshold (float): 손실 임계값 (기본값: -10%)
 
         Returns:
-        bool: 임계값 이상의 손실이 있으면 True, 아니면 False
+        list: 손실이 임계값 이상인 코인 목록
         """
         try:
-            # 수동 보유 코인을 제외한 현재 보유 코인들 확인
             balances = self.upbit.get_balances()
+            sold_coins = []
             for balance in balances:
                 currency = balance['currency']
                 if currency not in self.manual_holdings and currency != 'KRW':
-                    # 보유 금액이 1만원 이상인 코인만 체크
                     current_balance = float(balance['balance'])
                     avg_buy_price = float(balance['avg_buy_price'])
                     total_value = current_balance * avg_buy_price
 
-                    if total_value < 10000:  # 1만원 미만 스킵
+                    if total_value < 10000: # 1만원 미만은 제외
                         continue
 
                     ticker = f"KRW-{currency}"
 
                     # 현재가 조회
                     current_price = pyupbit.get_current_price(ticker)
-                    time.sleep(0.1) # 요청 제한을 피하기 위한 대기 시간
+                    time.sleep(0.1)
                     if current_price is None:
                         self.send_telegram_message(f"⚠️ {ticker}의 현재가를 조회할 수 없습니다. (상장폐지 의심)")
                         continue
@@ -189,22 +188,31 @@ class UpbitMomentumStrategy:
                     # 수익률 계산
                     profit_rate = ((current_price - avg_buy_price) / avg_buy_price) * 100
 
-                    # 설정한 손실 임계값 이상인지 확인
                     if profit_rate <= threshold:
+                        # 손절 매도 로직
                         self.send_telegram_message(
-                            f"⚠️ {ticker}의 손실률이 {profit_rate:.2f}%로 임계값({threshold}%)을 초과했습니다.\n"
+                            f"⚠️ {ticker}의 손실률이 {profit_rate:.2f}%로 임계값({threshold}%)을 초과하여 매도합니다.\n"
                             f"보유수량: {current_balance:.8f}\n"
                             f"평균단가: {avg_buy_price:,.0f}원\n"
                             f"현재가: {current_price:,.0f}원\n"
                             f"평가금액: {total_value:,.0f}원"
                         )
-                        return True
+                        try:
+                            self.upbit.sell_market_order(ticker, current_balance)
+                            self.send_telegram_message(f"✅ {ticker} 매도 완료")
+                            sold_coins.append(ticker)
+                        except Exception as e:
+                            self.send_telegram_message(f"❌ {ticker} 매도 실패: {str(e)}")
 
-            return False
+            # 보유 상태 최신화
+            self.sync_holdings_with_current_state()
+
+            return sold_coins
 
         except Exception as e:
             self.send_telegram_message(f"❌ 손실 체크 중 오류 발생: {str(e)}")
-            return False
+            return []
+
 
     def calculate_7day_returns(self, tickers):
         """
@@ -358,10 +366,7 @@ class UpbitMomentumStrategy:
             # 매수 대상 파악 및 매수
             krw_balance = float(self.upbit.get_balance("KRW"))
             if krw_balance > 0:
-                # 현재 자동매매로 보유 중인 코인 수 확인
                 auto_holdings_count = len(current_holdings)
-
-                # 남은 슬롯 수에 따라 투자금액 조정
                 remaining_slots = self.max_slots - auto_holdings_count
                 if remaining_slots > 0:
                     invest_amount = krw_balance / remaining_slots
@@ -380,12 +385,14 @@ class UpbitMomentumStrategy:
                                 self.holding_periods[ticker] = datetime.now()
                                 self.consecutive_holds[ticker] = self.consecutive_holds.get(ticker, 0) + 1
 
+                                # 매수 시점 기록
+                                self.last_purchase_time = datetime.now()
+
                                 # 매수 성공한 코인을 current_holdings에 추가
                                 current_holdings.append(ticker.split('-')[1])
                             except Exception as e:
                                 self.send_telegram_message(f"❌ {ticker} 매수 실패: {str(e)}")
 
-            # 거래 완료 후 보유 정보 저장
             self.save_holdings_data()
 
         except Exception as e:
@@ -424,10 +431,10 @@ class UpbitMomentumStrategy:
         동적 조건에 따른 전략 실행
         - BTC가 120일 이평선 아래일 때 전량 매도하고 매수 중지
         - BTC가 120일 이평선 위로 올라올 때 매수 알고리즘 재개
-        - 보유 코인이 -10% 이상 손실일 때 리밸런싱
+        - 보유 코인이 -10% 이상 손실일 때 매도
         - 가장 오래된 보유 코인 기준으로 1주일 간격 리밸런싱
         """
-        is_trading_suspended = False  # 매매 중지 상태 추적
+        is_trading_suspended = False
 
         while True:
             try:
@@ -442,65 +449,51 @@ class UpbitMomentumStrategy:
                         balance['currency'] not in self.manual_holdings and
                         float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
                 ]
-                # 보유 코인 개수 및 이름 반환
                 holding_count = len(current_holdings)
-                holding_names = [f"KRW-{coin}" for coin in current_holdings]
 
-                has_significant_loss = self.check_loss_threshold()
+                # 손실 코인 매도
+                sold_coins = self.check_loss_threshold()
 
-                # 가장 오래된 보유 시간 체크
-                oldest_holding_time = None
-                if self.holding_periods:
-                    oldest_holding_time = min(self.holding_periods.values())
-                    time_since_oldest_holding = (current_time - oldest_holding_time).total_seconds() / 60  # 분 단위
-                else:
-                    time_since_oldest_holding = 9999999
+                # 손실 코인 매도 후 보유 상태 동기화
+                self.sync_holdings_with_current_state()
 
                 # BTC가 120MA 아래로 떨어진 경우
                 if not btc_above_ma:
                     if not is_trading_suspended:
-                        message = "😱 BTC가 120일 이평선 아래로 떨어져 전체 매도 후 매매를 중지합니다."
-                        self.send_telegram_message(message)
-                        self.sell_all_positions()  # 전체 포지션 매도
+                        self.send_telegram_message("😱 BTC가 120일 이평선 아래로 떨어져 전체 매도 후 매매를 중지합니다.")
+                        self.sell_all_positions()
                         is_trading_suspended = True
 
-                # BTC가 120MA 위로 올라온 경우
                 elif btc_above_ma and is_trading_suspended:
-                    message = "✅ BTC가 120일 이평선 위 올라왔습니다. 매매를 재개합니다."
-                    self.send_telegram_message(message)
+                    self.send_telegram_message("✅ BTC가 120일 이평선 위 올라왔습니다. 매매를 재개합니다.")
                     is_trading_suspended = False
                     self.execute_trades()
 
-                # 정상 매매 상태에서의 리밸런싱 조건 체크
                 elif not is_trading_suspended:
-                    should_rebalance = (
-                            has_significant_loss or  # -10% 이상 손실 발생
-                            (oldest_holding_time and time_since_oldest_holding >= self.rebalancing_interval) or # 가장 오래된 보유 코인이 기준 시간 초과
-                            holding_count < 3 #  보유 코인 3개 미만
+                    if holding_count == 0:
+                        # 모든 코인이 매도되었을 때 - 새로운 매수 시점 기준으로 리밸런싱
+                        if self.last_purchase_time:
+                            elapsed_minutes_since_last_purchase = (current_time - self.last_purchase_time).total_seconds() / 60
+                            if elapsed_minutes_since_last_purchase >= self.rebalancing_interval:
+                                self.send_telegram_message("🔄 모든 코인 매도 후 리밸런싱을 위한 새로운 매수 시점이 도래했습니다.")
+                                self.execute_trades()
+                        else:
+                            self.send_telegram_message("🔄 모든 코인이 매도되었지만, 최근 매수 시점이 기록되지 않았습니다 거래를 재개합니다.")
+                            self.execute_trades()
+                    else:
+                        should_rebalance = (
+                            len(sold_coins) > 0 or  # 일부 코인이 매도된 경우
+                            holding_count < 3  # 보유 코인 수가 3개 미만일 경우
+                        )
 
-                    )
+                        if should_rebalance:
+                            self.send_telegram_message("🔄 <b>리밸런싱 실행</b> - 일부 코인 매도 후 재매수 또는 보유 코인 수 부족")
+                            self.execute_trades()
 
-                    if should_rebalance:
-                        message_parts = [
-                            "🔄 <b>리밸런싱 실행</b>",
-                            f"시간: {current_time.strftime('%Y-%m-%d %H:%M:%S')}",
-                            f"BTC 120MA: {'상단 ✅' if btc_above_ma else '하단 ❌'}",
-                            f"큰 손실 발생: {'예 ⚠️' if has_significant_loss else '아니오 ✅'}",
-                            f"보유 코인 수: {holding_count}개: {holding_names}",
-                        ]
-
-                        if oldest_holding_time:
-                            message_parts.append(f"가장 오래된 보유 시간: {time_since_oldest_holding:.1f}분")
-
-                        self.send_telegram_message("\n".join(message_parts))
-                        self.execute_trades()
-
-                # 1분 간격으로 체크
                 time.sleep(60)
 
             except Exception as e:
-                error_message = f"❌ 실행 중 오류 발생: {str(e)}"
-                self.send_telegram_message(error_message)
+                self.send_telegram_message(f"❌ 실행 중 오류 발생: {str(e)}")
                 time.sleep(60)
 
 
