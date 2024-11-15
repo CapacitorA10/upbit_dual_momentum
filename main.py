@@ -447,7 +447,7 @@ class UpbitMomentumStrategy:
                 holding_name = ', '.join(current_holdings)
 
                 # 손실 코인 매도
-                sold_coins = self.check_loss_threshold(threshold=20)
+                sold_coins = self.check_loss_threshold(threshold=-20)
 
                 # 손실 코인 매도 후 보유 상태 동기화
                 self.sync_holdings_with_current_state()
