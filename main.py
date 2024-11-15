@@ -19,7 +19,7 @@ class UpbitMomentumStrategy:
             self.manual_holdings = config['trading']['manual_holdings']
             self.exclude_coins = config['trading']['exclude_coins'] + self.manual_holdings
             self.max_slots = config['trading'].get('max_slots', 3)
-            self.rebalancing_interval = config['trading'].get('rebalancing_interval', 10080)
+            self.rebalancing_interval = config['trading'].get('rebalancing_interval', 10080) * 60 # 일 단위로 변환
             self.last_purchase_time = None
             self.holdings_file = 'holdings_data.json'
 
