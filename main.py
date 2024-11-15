@@ -316,12 +316,6 @@ class UpbitMomentumStrategy:
 
             self.save_holdings_data()
 
-            holdings_msg = "📊 현재 보유 코인 상태:\n"
-            for ticker in current_holdings:
-                holding_time = datetime.now() - self.holding_periods[ticker]
-                holdings_msg += f"{ticker}: {holding_time.days}일 {holding_time.seconds // 3600}시간 보유 중\n"
-            self.send_telegram_message(holdings_msg)
-
         except Exception as e:
             self.send_telegram_message(f"보유 상태 동기화 중 오류 발생: {str(e)}")
 
@@ -450,9 +444,10 @@ class UpbitMomentumStrategy:
                         float(balance['balance']) * float(balance['avg_buy_price']) >= 10000)
                 ]
                 holding_count = len(current_holdings)
+                holding_name = ', '.join(current_holdings)
 
                 # 손실 코인 매도
-                sold_coins = self.check_loss_threshold()
+                sold_coins = self.check_loss_threshold(threshold=20)
 
                 # 손실 코인 매도 후 보유 상태 동기화
                 self.sync_holdings_with_current_state()
@@ -488,6 +483,7 @@ class UpbitMomentumStrategy:
 
                         if should_rebalance:
                             self.send_telegram_message("🔄 <b>리밸런싱 실행</b> - 일부 코인 매도 후 재매수 또는 보유 코인 수 부족")
+                            self.send_telegram_message(f"📈 현재 보유 코인: {holding_name}")
                             self.execute_trades()
 
                 time.sleep(60)
