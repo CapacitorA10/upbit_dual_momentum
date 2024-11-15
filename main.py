@@ -86,27 +86,35 @@ class UpbitMomentumStrategy:
                 currency = balance['currency']
                 if currency in self.manual_holdings or currency == 'KRW':
                     continue
+
                 balance_amt = float(balance['balance'])
                 avg_price = float(balance['avg_buy_price'])
                 if balance_amt * avg_price < 10000:
                     continue
+
                 current_price = pyupbit.get_current_price(f"KRW-{currency}")
                 if not current_price:
                     self.send_telegram_message(f"⚠️ {currency}의 현재가를 조회할 수 없습니다.")
                     continue
+
                 profit = ((current_price - avg_price) / avg_price) * 100
+
                 if profit <= threshold:
                     msg = (f"⚠️ {currency}의 손실률이 {profit:.2f}%로 임계값({threshold}%)을 초과하여 매도합니다.\n"
                            f"보유수량: {balance_amt:.8f}\n평균단가: {avg_price:,.0f}원\n"
                            f"현재가: {current_price:,.0f}원\n평가금액: {balance_amt * avg_price:,.0f}원")
                     self.send_telegram_message(msg)
+
                     try:
                         self.upbit.sell_market_order(f"KRW-{currency}", balance_amt)
                         self.send_telegram_message(f"✅ {currency} 매도 완료")
                         sold.append(f"KRW-{currency}")
+
                     except Exception as e:
                         self.send_telegram_message(f"❌ {currency} 매도 실패: {e}")
+
             self.sync_holdings_with_current_state()
+
         except Exception as e:
             self.send_telegram_message(f"❌ 손실 체크 중 오류 발생: {e}")
         return sold
