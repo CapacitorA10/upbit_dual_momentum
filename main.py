@@ -149,14 +149,26 @@ class UpbitMomentumStrategy:
             if os.path.exists(self.holdings_file):
                 with open(self.holdings_file, 'r') as f:
                     data = json.load(f)
-                    self.holding_periods = {k: datetime.fromisoformat(v) for k, v in data.get('holding_periods', {}).items()}
+                    self.holding_periods = {k: datetime.fromisoformat(v) for k, v in
+                                            data.get('holding_periods', {}).items()}
                     self.consecutive_holds = data.get('consecutive_holds', {})
+
+                    # 가장 오래된 보유 기간을 기준으로 last_purchase_time 설정
+                    if self.holding_periods:
+                        self.last_purchase_time = min(self.holding_periods.values())
+                        self.send_telegram_message(
+                            f"📅 가장 오래된 보유 기간 기준으로 last_purchase_time 초기화: {self.last_purchase_time}")
+                    else:
+                        self.last_purchase_time = None
             else:
                 self.holding_periods = {}
                 self.consecutive_holds = {}
+                self.last_purchase_time = None
+
         except Exception as e:
-            self.send_telegram_message(f"보유 정보 로드 중 오류 발생: {e}")
+            self.send_telegram_message(f"❌ 보유 정보 로드 중 오류 발생: {e}")
             self.holding_periods, self.consecutive_holds = {}, {}
+            self.last_purchase_time = None
 
     def save_holdings_data(self):
         try:
