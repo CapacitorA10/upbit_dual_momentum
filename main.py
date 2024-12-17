@@ -233,7 +233,7 @@ class UpbitMomentumStrategy:
 
             krw_balance = float(self.upbit.get_balance("KRW"))
             if krw_balance > 0 and (slots := self.max_slots - (len(current_holdings) - len(sold))) > 0:
-                invest = max(int(krw_balance / slots / 1000) * 1000, 5000)
+                invest = max(int(krw_balance / slots / 1000) * 990, 5000) # 5천원 이상, 1000원 단위이고
                 for ticker in target_coins:
                     if ticker not in [f"KRW-{c}" for c in current_holdings]:
                         try:
