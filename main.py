@@ -1,5 +1,5 @@
 import pyupbit
-import pandas as pd
+import pytz
 import time
 import json
 from datetime import datetime
@@ -276,8 +276,10 @@ class UpbitMomentumStrategy:
 
     def run(self):
         is_suspended = False
+        kst = pytz.timezone('Asia/Seoul')
         while True:
             try:
+                now = datetime.now(kst)
                 btc_above_ma = self.get_btc_ma120() # BTC 120일 이평선 상위인지 확인
                 sold_coins = self.check_loss_threshold(threshold=-20) # 손절 체크 후 매도
                 self.sync_holdings_with_current_state()
@@ -293,6 +295,7 @@ class UpbitMomentumStrategy:
                         is_suspended = False
                         self.execute_trades()
 
+
                 # 리밸런싱 조건 체크
                 holding_count = len([
                     balance['currency']
@@ -300,7 +303,7 @@ class UpbitMomentumStrategy:
                     if (
                             float(balance['balance']) > 0 and  # 잔액이 0보다 큰 경우
                             balance['currency'] not in self.manual_holdings and  # manual_holdings에 없는 경우
-                            float(balance['balance']) * float(balance['avg_buy_price']) >= 10000  # 총 가치가 10,000 이상인 경우
+                            float(balance['balance']) * float(balance['avg_buy_price']) >= 50000  # 총 가치가 10,000 이상인 경우
                     )
                 ])
 
@@ -310,7 +313,7 @@ class UpbitMomentumStrategy:
                     self.execute_trades()
                 # 리밸런싱 주기마다 매매 실행
                 elif (self.last_purchase_time is not None) and (
-                        (datetime.now() - self.last_purchase_time).total_seconds() >= self.rebalancing_interval):
+                        now.weekday() == 0 and now.hour == 23 and 29 <= now.minute < 31):
                     self.send_telegram_message(f"리밸런싱 주기가 도래하여 매매를 실행합니다.")
                     self.execute_trades()
 
